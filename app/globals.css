@@ -28,4 +28,10 @@ body {
   transform: translate(-50%, -50%);
   transition: transform 0.1s ease;
   z-index: 9999;
+}
+
+@layer components {
+  .btn-primary {
+    @apply px-4 py-2 bg-primary text-white rounded-lg hover:bg-opacity-90 transition-all duration-200;
+  }
 } 
