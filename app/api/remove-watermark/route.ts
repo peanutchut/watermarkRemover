@@ -1,19 +1,15 @@
 import { NextResponse } from 'next/server';
-import { v2 as cloudinary } from 'cloudinary';
+import Replicate from 'replicate';
 import sharp from 'sharp';
 
-// Configure Cloudinary
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET,
+const replicate = new Replicate({
+  auth: process.env.REPLICATE_API_TOKEN,
 });
 
 export async function POST(request: Request) {
   try {
     const formData = await request.formData();
     const image = formData.get('image') as File;
-    
     if (!image) {
       return NextResponse.json({ error: 'No image provided' }, { status: 400 });
     }
@@ -22,56 +18,60 @@ export async function POST(request: Request) {
     const buffer = await image.arrayBuffer();
     const imageBuffer = Buffer.from(buffer);
 
-    // First pass: Use sharp for initial processing
-    const processedBuffer = await sharp(imageBuffer)
-      .modulate({ brightness: 1.2 }) // Increase brightness
-      .sharpen({ sigma: 1.5 }) // Sharpen the image
+    // Get image metadata
+    const metadata = await sharp(imageBuffer).metadata();
+    const width = metadata.width || 512;
+    const height = metadata.height || 512;
+
+    // Generate a simple center mask (white in center, black elsewhere, RGB)
+    const mask = await sharp({
+      create: {
+        width,
+        height,
+        channels: 3,
+        background: { r: 0, g: 0, b: 0 },
+      },
+    })
+      .composite([
+        {
+          input: await sharp({
+            create: {
+              width: Math.floor(width * 0.6),
+              height: Math.floor(height * 0.6),
+              channels: 3,
+              background: { r: 255, g: 255, b: 255 },
+            },
+          })
+            .png()
+            .toBuffer(),
+          left: Math.floor(width * 0.2),
+          top: Math.floor(height * 0.2),
+        },
+      ])
+      .png()
       .toBuffer();
 
-    // Upload to Cloudinary with advanced transformations
-    const uploadResult = await cloudinary.uploader.upload(
-      `data:${image.type};base64,${processedBuffer.toString('base64')}`,
+    // Convert images to base64 data URLs
+    const imageBase64 = `data:image/png;base64,${imageBuffer.toString('base64')}`;
+    const maskBase64 = `data:image/png;base64,${mask.toString('base64')}`;
+
+    // Call Replicate's inpainting model
+    const output = await replicate.run(
+      'stability-ai/stable-diffusion-inpainting:db21e45e8b',
       {
-        resource_type: 'auto',
-        folder: 'watermark-remover',
-        transformation: [
-          // Color adjustments
-          { effect: 'improve:outdoor:100' },
-          { effect: 'auto_contrast:100' },
-          { effect: 'auto_brightness:100' },
-          { effect: 'saturation:50' },
-          
-          // Detail enhancement
-          { effect: 'sharpen:100' },
-          { effect: 'unsharp_mask:100' },
-          
-          // Noise reduction
-          { effect: 'noise_reduction:100' },
-          
-          // Quality settings
-          { quality: 'auto:best' },
-          { fetch_format: 'auto' }
-        ]
+        input: {
+          image: imageBase64,
+          mask: maskBase64,
+          prompt: 'remove watermark, realistic background',
+          num_inference_steps: 30,
+          guidance_scale: 7.5,
+        },
       }
     );
 
-    // Apply final transformations
-    const processedUrl = cloudinary.url(uploadResult.public_id, {
-      transformation: [
-        // Final color adjustments
-        { effect: 'improve:outdoor:100' },
-        { effect: 'auto_contrast:100' },
-        
-        // Final detail enhancement
-        { effect: 'sharpen:100' },
-        
-        // Final quality settings
-        { quality: 'auto:best' },
-        { fetch_format: 'auto' }
-      ]
-    });
-
-    return NextResponse.json({ image: processedUrl });
+    // The output is an array of image URLs
+    const resultUrl = Array.isArray(output) ? output[0] : output;
+    return NextResponse.json({ image: resultUrl });
   } catch (error) {
     console.error('Error processing image:', error);
     return NextResponse.json(
