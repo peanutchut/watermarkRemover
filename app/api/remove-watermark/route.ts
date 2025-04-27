@@ -10,6 +10,7 @@ export async function POST(request: Request) {
   try {
     const formData = await request.formData();
     const image = formData.get('image') as File;
+    const maskFile = formData.get('mask') as File | null;
     if (!image) {
       return NextResponse.json({ error: 'No image provided' }, { status: 400 });
     }
@@ -23,37 +24,44 @@ export async function POST(request: Request) {
     const width = metadata.width || 512;
     const height = metadata.height || 512;
 
-    // Generate a simple center mask (white in center, black elsewhere, RGB)
-    const mask = await sharp({
-      create: {
-        width,
-        height,
-        channels: 3,
-        background: { r: 0, g: 0, b: 0 },
-      },
-    })
-      .composite([
-        {
-          input: await sharp({
-            create: {
-              width: Math.floor(width * 0.6),
-              height: Math.floor(height * 0.6),
-              channels: 3,
-              background: { r: 255, g: 255, b: 255 },
-            },
-          })
-            .png()
-            .toBuffer(),
-          left: Math.floor(width * 0.2),
-          top: Math.floor(height * 0.2),
+    let maskBuffer: Buffer;
+    if (maskFile) {
+      // Use user-provided mask
+      const maskArrayBuffer = await maskFile.arrayBuffer();
+      maskBuffer = Buffer.from(maskArrayBuffer);
+    } else {
+      // Generate a simple center mask (white in center, black elsewhere, RGB)
+      maskBuffer = await sharp({
+        create: {
+          width,
+          height,
+          channels: 3,
+          background: { r: 0, g: 0, b: 0 },
         },
-      ])
-      .png()
-      .toBuffer();
+      })
+        .composite([
+          {
+            input: await sharp({
+              create: {
+                width: Math.floor(width * 0.6),
+                height: Math.floor(height * 0.6),
+                channels: 3,
+                background: { r: 255, g: 255, b: 255 },
+              },
+            })
+              .png()
+              .toBuffer(),
+            left: Math.floor(width * 0.2),
+            top: Math.floor(height * 0.2),
+          },
+        ])
+        .png()
+        .toBuffer();
+    }
 
     // Convert images to base64 data URLs
     const imageBase64 = `data:image/png;base64,${imageBuffer.toString('base64')}`;
-    const maskBase64 = `data:image/png;base64,${mask.toString('base64')}`;
+    const maskBase64 = `data:image/png;base64,${maskBuffer.toString('base64')}`;
 
     // Call Replicate's inpainting model
     const output = await replicate.run(

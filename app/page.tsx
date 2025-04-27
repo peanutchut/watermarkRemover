@@ -1,12 +1,82 @@
 'use client';
 
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { useDropzone } from 'react-dropzone';
 import axios from 'axios';
 
+function MaskCanvas({ image, onMaskChange }: { image: File, onMaskChange: (mask: Blob) => void }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
+  const [drawing, setDrawing] = useState(false);
+
+  React.useEffect(() => {
+    if (!image) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      if (imgRef.current && e.target?.result) {
+        imgRef.current.src = e.target.result as string;
+      }
+    };
+    reader.readAsDataURL(image);
+  }, [image]);
+
+  const startDraw = (e: React.MouseEvent) => {
+    setDrawing(true);
+    draw(e);
+  };
+  const endDraw = () => {
+    setDrawing(false);
+    // Export mask as PNG
+    if (canvasRef.current) {
+      canvasRef.current.toBlob((blob) => {
+        if (blob) onMaskChange(blob);
+      }, 'image/png');
+    }
+  };
+  const draw = (e: React.MouseEvent) => {
+    if (!drawing || !canvasRef.current) return;
+    const rect = canvasRef.current.getBoundingClientRect();
+    const ctx = canvasRef.current.getContext('2d')!;
+    ctx.globalAlpha = 1.0;
+    ctx.strokeStyle = 'white';
+    ctx.lineWidth = 30;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(
+      (e.nativeEvent.offsetX),
+      (e.nativeEvent.offsetY)
+    );
+    ctx.lineTo(
+      (e.nativeEvent.offsetX + 0.1),
+      (e.nativeEvent.offsetY + 0.1)
+    );
+    ctx.stroke();
+  };
+
+  return (
+    <div className="relative inline-block">
+      <img ref={imgRef} alt="Preview" className="max-h-64 mx-auto rounded-lg shadow-sm select-none pointer-events-none" />
+      <canvas
+        ref={canvasRef}
+        width={imgRef.current?.width || 512}
+        height={imgRef.current?.height || 512}
+        className="absolute top-0 left-0 w-full h-full cursor-crosshair z-10"
+        style={{ touchAction: 'none' }}
+        onMouseDown={startDraw}
+        onMouseUp={endDraw}
+        onMouseOut={endDraw}
+        onMouseMove={draw}
+      />
+      <div className="absolute top-2 left-2 bg-black/60 text-white px-2 py-1 rounded text-xs">Draw over watermark</div>
+    </div>
+  );
+}
+
 export default function Home() {
   const [image, setImage] = useState<File | null>(null);
+  const [mask, setMask] = useState<Blob | null>(null);
   const [processedImage, setProcessedImage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -18,6 +88,7 @@ export default function Home() {
       setImage(file);
       setProcessedImage(null);
       setError(null);
+      setMask(null);
     } else {
       setError('Please upload a valid image file');
     }
@@ -32,24 +103,24 @@ export default function Home() {
   });
 
   const handleProcessImage = async () => {
-    if (!image) return;
-
+    if (!image || !mask) {
+      setError('Please draw over the watermark area before processing.');
+      return;
+    }
     setLoading(true);
     setError(null);
-    setProcessingStage('Initializing AI processing...');
-
+    setProcessingStage('Uploading image and mask...');
     try {
       const formData = new FormData();
       formData.append('image', image);
-
-      setProcessingStage('Analyzing image content...');
+      formData.append('mask', mask, 'mask.png');
+      setProcessingStage('Processing with AI...');
       const response = await axios.post('/api/remove-watermark', formData, {
         onUploadProgress: (progressEvent) => {
           const progress = Math.round((progressEvent.loaded * 100) / (progressEvent.total || 1));
           setProcessingStage(`Processing image: ${progress}%`);
         }
       });
-
       setProcessingStage('Applying final enhancements...');
       setProcessedImage(response.data.image);
     } catch (err) {
@@ -77,7 +148,7 @@ export default function Home() {
           animate={{ opacity: 1 }}
           transition={{ delay: 0.2 }}
         >
-          Powered by advanced AI image processing
+          Draw over the watermark for best results
         </motion.p>
 
         <motion.div 
@@ -93,12 +164,8 @@ export default function Home() {
             <input {...getInputProps()} />
             {image ? (
               <div className="space-y-4">
+                <MaskCanvas image={image} onMaskChange={setMask} />
                 <p className="text-sm text-gray-500">Selected: {image.name}</p>
-                <img 
-                  src={URL.createObjectURL(image)} 
-                  alt="Preview" 
-                  className="max-h-64 mx-auto rounded-lg shadow-sm"
-                />
               </div>
             ) : (
               <div className="space-y-4">
